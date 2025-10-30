@@ -75,7 +75,8 @@ BEGIN
     AND analysis_date = CURRENT_DATE;
     
     -- User can use free trial if they haven't used it today (< 1)
-    RETURN (v_today_count < 1);
+    RETURN (v_today_count < 1);  -- Allows 0, blocks on 1st usage
+
 END;
 $$;
 
