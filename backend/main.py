@@ -1502,131 +1502,56 @@ async def reactivate_user_subscription(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Stripe webhook endpoint for handling subscription events
-@app.post("/api/v1/webhook/stripe")
-async def stripe_webhook(request: dict):
-    """Handle Stripe webhook events"""
+# ═══════════════════════════════════════════════════════════════
+# STRIPE WEBHOOK
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/api/v1/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """Обработать Stripe webhook события"""
+    
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    
+    if not webhook_secret:
+        raise HTTPException(status_code=400, detail="Missing webhook secret")
+    
     try:
-        # TODO: Verify webhook signature in production
-        # from stripe import StripeClient
-        # client = StripeClient(settings.stripe_api_key)
-        # event = client.construct_event(payload, sig_header, settings.stripe_webhook_secret)
-
-        event_type = request.get("type")
-        data = request.get("data", {}).get("object", {})
-
-        logger.info(f"📨 Received Stripe webhook: {event_type}")
-
-        # Handle different event types
-        if event_type == "customer.subscription.created":
-            # New subscription created
-            subscription_id = data.get("id")
-            customer_id = data.get("customer")
-            status = data.get("status")
-            current_period_start = data.get("current_period_start")
-            current_period_end = data.get("current_period_end")
-
-            # Find user by Stripe customer ID
-            user = await get_user_by_stripe_customer_id(customer_id)
-            if user:
-                from datetime import datetime
-                await update_user_subscription(
-                    user_id=user["id"],
-                    subscription_id=subscription_id,
-                    status=status,
-                    start_date=datetime.fromtimestamp(
-                        current_period_start).isoformat() if current_period_start else None,
-                    end_date=datetime.fromtimestamp(
-                        current_period_end).isoformat() if current_period_end else None
-                )
-                logger.info(
-                    f"✅ Subscription created and saved: {subscription_id} for user {user['id']}")
-            else:
-                logger.warning(
-                    f"⚠️ User not found for Stripe customer: {customer_id}")
-
-        elif event_type == "customer.subscription.updated":
-            # Subscription updated (status change, renewal, etc.)
-            subscription_id = data.get("id")
-            customer_id = data.get("customer")
-            status = data.get("status")
-            current_period_start = data.get("current_period_start")
-            current_period_end = data.get("current_period_end")
-
-            # Find user by Stripe customer ID
-            user = await get_user_by_stripe_customer_id(customer_id)
-            if user:
-                from datetime import datetime
-                await update_user_subscription(
-                    user_id=user["id"],
-                    subscription_id=subscription_id,
-                    status=status,
-                    start_date=datetime.fromtimestamp(
-                        current_period_start).isoformat() if current_period_start else None,
-                    end_date=datetime.fromtimestamp(
-                        current_period_end).isoformat() if current_period_end else None
-                )
-                logger.info(
-                    f"✅ Subscription updated: {subscription_id} - {status} for user {user['id']}")
-            else:
-                logger.warning(
-                    f"⚠️ User not found for Stripe customer: {customer_id}")
-
-        elif event_type == "customer.subscription.deleted":
-            # Subscription canceled/ended
-            subscription_id = data.get("id")
-            customer_id = data.get("customer")
-
-            # Find user by Stripe customer ID
-            user = await get_user_by_stripe_customer_id(customer_id)
-            if user:
-                await update_user_subscription(
-                    user_id=user["id"],
-                    subscription_id=subscription_id,
-                    status="canceled"
-                )
-                logger.info(
-                    f"✅ Subscription canceled: {subscription_id} for user {user['id']}")
-            else:
-                logger.warning(
-                    f"⚠️ User not found for Stripe customer: {customer_id}")
-
-        elif event_type == "checkout.session.completed":
-            # Checkout completed - link customer to user if needed
-            session = data
-            customer_id = session.get("customer")
-            customer_email = session.get("customer_details", {}).get("email")
-            subscription_id = session.get("subscription")
-
-            logger.info(
-                f"✅ Checkout completed: session={session.get('id')}, customer={customer_id}, email={customer_email}")
-
-            # Try to find user by email and link Stripe customer
-            if customer_email and customer_id:
-                client = get_supabase()
-                # Find user by email in auth.users
-                try:
-                    # Search in profiles table
-                    response = client.table("profiles").select(
-                        "*").eq("email", customer_email).execute()
-                    if response.data:
-                        user = response.data[0]
-                        # Update Stripe customer ID if not set
-                        if not user.get("stripe_customer_id"):
-                            await update_user_stripe_customer(user["id"], customer_id)
-                            logger.info(
-                                f"✅ Linked Stripe customer {customer_id} to user {user['id']}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to link customer: {e}")
-
-        return {"received": True}
-
-    except Exception as e:
-        logger.error(f"❌ Webhook processing failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        event = stripe.Webhook.construct_event(
+            payload,
+            sig_header,
+            webhook_secret
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session.get("client_reference_id")
+        
+        if user_id:
+            try:
+                supabase_client = get_supabase()
+                supabase_client.table("users").update({
+                    "subscription_status": "active",
+                    "stripe_session_id": session["id"]
+                }).eq("id", user_id).execute()
+                
+                logger.info(f"✅ Subscription activated for user {user_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to update subscription: {e}")
+        
+        return {"status": "ok"}
+    
+    return {"status": "received"}
 
 
 # Root endpoint
+
 
 
 @app.get("/")
