@@ -507,10 +507,10 @@ async def can_use_free_trial(user_id: str) -> bool:
 
     except Exception as e:
         logger.error(f"❌ Failed to check free trial eligibility: {e}")
-        # FALLBACK: Allow free trial if tables don't exist (before migration)
-        logger.warning(
-            "⚠️ Allowing free trial (database may not be initialized)")
-        return True
+        # BLOCK on error - safer than allowing unlimited
+        logger.warning("⚠️ BLOCKING free trial due to database error")
+        return False
+
 
 
 async def record_free_trial_usage(user_id: str, profile_analyzed: Optional[str] = None) -> bool:
