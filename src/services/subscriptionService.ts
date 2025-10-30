@@ -123,36 +123,35 @@ export async function getFreeTrialInfo(): Promise<FreeTrialInfo> {
   return response.json();
 }
 
-/**
- * Create a public payment link for subscription
- * This doesn't require authentication
- */
 export async function createPublicPaymentLink(
   email?: string,
   successUrl?: string,
   cancelUrl?: string
 ): Promise<PaymentLinkResponse> {
-  const params = new URLSearchParams();
-  if (email) params.append('user_email', email);
-  if (successUrl) params.append('success_url', successUrl);
-  if (cancelUrl) params.append('cancel_url', cancelUrl);
-
-  const response = await fetch(
-    `${API_BASE_URL}/api/v1/subscription/create-payment-link?${params.toString()}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    }
-  );
+  const response = await fetch('/api/subscription/checkout', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      email,
+      successUrl: successUrl || `${window.location.origin}/subscription/success`,
+      cancelUrl: cancelUrl || `${window.location.origin}/`,
+    }),
+  });
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail || 'Failed to create payment link');
+    throw new Error(error.error || 'Failed to create checkout session');
   }
 
-  return response.json();
+  const data = await response.json();
+  return {
+    success: true,
+    payment_url: data.url,
+    session_id: data.sessionId,
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  };
 }
 
 /**
